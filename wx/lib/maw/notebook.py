@@ -28,28 +28,82 @@ class NoteBook(wx.Control):
     __ALL_ORIENT = (MAW_NB_ORIENT_NORTH | MAW_NB_ORIENT_SOUTH |
                     MAW_NB_ORIENT_WEST  | MAW_NB_ORIENT_EAST)
 
+    __ALL_ORIENT_SET = (MAW_NB_ORIENT_NORTH, MAW_NB_ORIENT_SOUTH,
+                        MAW_NB_ORIENT_WEST,  MAW_NB_ORIENT_EAST)
+
     __ALL_GRAV = (MAW_NB_GRAV_NORTH | MAW_NB_GRAV_SOUTH |
                   MAW_NB_GRAV_WEST  | MAW_NB_GRAV_EAST)
 
+    __ALL_GRAV_SET = (MAW_NB_GRAV_NORTH, MAW_NB_GRAV_SOUTH,
+                      MAW_NB_GRAV_WEST,  MAW_NB_GRAV_EAST)
+
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    # The class nesting (though not a language level) implies a particular relationship.
+    # clients will not need to subclass, or instance TabContainer or PageInfo directly
+    # (especially not the latter). As such the classes are nested to indicate dependence
+    # on the enclosing, NoteBook, class. Anyone who tells me that 'Python isn't Java' over this
+    # can eat a shoe. Its a valid implication that Python users need to embrace more.
+    # (I can also say that the implication is just as valid as using double underscores
+    # to imply privacy. Or that using namespaces in C/C++ implies relationships)
+    # /endrant.
+
     class TabContainer(wx.Control):
-        def __init__(self, parent, artprov):
+        """
+        This widget manages and
+        """
+        def __init__(self, parent, artprov, nbstyle):
             wx.Control.__init__(self, parent, wx.NewId(), style = wx.BORDER_SUNKEN)
 
+            if not isinstance(parent, NoteBook):
+                raise TypeError("TabContainer must be associated to NoteBook")
+
             self.__artprov = artprov
+            self.__style = nbstyle
 
-            self.Bind(wx.EVT_PAINT, self.OnPaint)
-            self.Bind(wx.EVT_LEFT_DCLICK, self.OnClick)
-            self.Bind(wx.EVT_SIZE, self.OnSize)
+            self.SetMaxTabSize(wx.Size(75, 30))
+            self.SetMinSize(self.GetMaxTabSize())
 
-            # Will need to bind drag-n-drop behavior too.
+            #self.Bind(wx.EVT_PAINT, self.OnPaint)
+            #self.Bind(wx.EVT_LEFT_DCLICK, self.OnClick)
+            #self.Bind(wx.EVT_SIZE, self.OnSize)
+
+            # Will need to bind drag-'n'-drop behavior too.
+
+        def GetMaxTabSize(self):
+            """
+            :return: The maximum size that will be allocated to any single tab.
+            :rtype: wx.Size
+            """
+            return self.__maxtabsize
+
+        def SetMaxTabSize(self, size):
+            """
+            :param wx.Size, tuple size: the size to set.
+            :return: None
+            """
+            if not isinstance(size, (wx.Size, tuple, list)):
+                raise TypeError("Expected type castable to wx.Size")
+            self.__maxtabsize = wx.Size(size)
+            self.SetMinSize(self.__maxtabsize)
 
         def OnPaint(self, evt):
             """
             :param evt:
             :return:
             """
+            dc = wx.BufferedPaintDC(self)
             # Do the magic.
+            baseRect = wx.Rect((0, 0), self.GetSize())
+            for content in (x.GetContent() for x in self.__pageinfos):
+                # Calculate and set ClippingRegion:
+
+                consumed = self.__artprov.RenderNbTab(dc, baseRect, content, self.__style)
+
+                # Destroy last ClippingRegion
+
+                # progress baseRect in relevant direction:
+
 
         def OnClick(self, evt):
             """
@@ -92,6 +146,8 @@ class NoteBook(wx.Control):
     def __init__(self, parent, id = -1, artprov = None,  nbstyle = 0, style = 0):
         wx.Control.__init__(self, parent, id, style = style)
 
+        self.__nbstyle = self.__validateNbStyle(nbstyle)
+
         if artprov:
             if isinstance(artprov, artprovider.ArtProvider):
                 self.__artprov = artprov
@@ -100,26 +156,35 @@ class NoteBook(wx.Control):
         else:
             self.__artprov = artprovider.DefaultProvider()
 
-        self.__tabcontainer = NoteBook.TabContainer(self, self.__artprov)
+        self.__tabcontainer = NoteBook.TabContainer(self, self.__artprov, self.__nbstyle)
+        self.__tabcontainer.SetMinSize((75, 30))
+
         self.__activeWidget = None
         self.__pages = []
 
-        self.SetNbStyle(nbstyle)
+        print("Updating sizer.")
+        self.__updateSizer()
 
+    @property
+    def tabcontainer(self):
+        return self.__tabcontainer
 
-    def AddPage(self, content, page):
+    def AddPage(self, content, page, focus = False):
         """
         Add page to notebook.
         :param content: User defined content to be associated with the page. Usually a string, is sent to
                         the artprovider for use.
                         If using DefaultProvider, it is expected to be a string.
         :param page:    An instance of wx.Window.
+        :param focus:   Indicates if the new page should take focus.
         :return:        None
         """
         self.__pages.append(NoteBook.PageInfo(page, content))
+        if len(self.__pages) == 1 or focus:
+            self.__activeWidget = page
 
-    def GetTabContainer(self):
-        return self.__tabcontainer
+    def RemovePage(self, page):
+        raise NotImplementedError
 
     def GetNbStyle(self):
         """
@@ -146,7 +211,7 @@ class NoteBook(wx.Control):
 
         :raises InvalidStyle: if given style is invalid
         """
-        # To do: only perform rearrangements if orient is changed.
+        # To do: only perform rearrangements if orientation is changed.
         if not style:
             return NoteBook.MAW_NB_ORIENT_NORTH | NoteBook.MAW_NB_GRAV_SOUTH
         if not (style & NoteBook.__ALL_GRAV) in NoteBook.__ALL_GRAV:
@@ -161,9 +226,14 @@ class NoteBook(wx.Control):
         """
         :return: None
         """
+
+        # Note to self: Don't remove all widgets then add them back in the 'correct' order.
+        # Just remove tab container and then append/prepend it.
+
         try:
             sizer = self.__sizer
         except AttributeError:
+            print("Initializing sizer.")
             self.__sizer = wx.BoxSizer()
             self.SetSizer(self.__sizer)
             sizer = self.__sizer
@@ -176,21 +246,20 @@ class NoteBook(wx.Control):
 
         if self.__nbstyle & (NoteBook.MAW_NB_ORIENT_NORTH | NoteBook.MAW_NB_ORIENT_WEST):
             # Insert tabcontainer first, then other widgets.
-            sizer.Add(self.__tabcontainer, wx.EXPAND)
+            sizer.Add(self.__tabcontainer, 0, wx.EXPAND)
 
-            #sizer.AddMany([x.GetWidget() for x in self.__pages])
             for widget in (x.GetWidget() for x in self.__pages):
-                sizer.Add(widget, wx.EXPAND)
+                sizer.Add(widget, 1, wx.EXPAND)
                 if widget is not self.__activeWidget:
                     sizer.Hide(widget)
 
         else:
             # tabctrl is second.
             for widget in (x.GetWidget() for x in self.__pages):
-                sizer.Add(widget, wx.EXPAND)
+                sizer.Add(widget, 1, wx.EXPAND)
                 if widget is not self.__activeWidget:
                     sizer.Hide(widget)
 
-            sizer.Add(self.__tabcontainer, wx.EXPAND)
+            sizer.Add(self.__tabcontainer, 0, wx.EXPAND)
 
         sizer.Layout()
